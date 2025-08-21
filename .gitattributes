@@ -1,0 +1,9 @@
+*.safetensors filter=lfs diff=lfs merge=lfs -text
+*.parquet filter=lfs diff=lfs merge=lfs -text
+*.bin filter=lfs diff=lfs merge=lfs -text
+text-classification/project1_finetune_sentiment/bert-base-uncased/model.safetensors filter=lfs diff=lfs merge=lfs -text
+text-classification/project2_news_classification/pretrained_bert/pytorch_model.bin filter=lfs diff=lfs merge=lfs -text
+text-classification/project1_finetune_sentiment/imdb/test-00000-of-00001.parquet filter=lfs diff=lfs merge=lfs -text
+text-classification/project1_finetune_sentiment/imdb/train-00000-of-00001.parquet filter=lfs diff=lfs merge=lfs -text
+text-classification/project1_finetune_sentiment/imdb/unsupervised-00000-of-00001.parquet filter=lfs diff=lfs merge=lfs -text
+*.csv filter=lfs diff=lfs merge=lfs -text
