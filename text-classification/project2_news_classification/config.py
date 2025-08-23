@@ -46,7 +46,7 @@ class Config(object):
         # 训练控制参数       
         self.num_epochs = 3
         self.max_seq_len = 32
-        self.batch_size = 128        
+        self.batch_size = 32        
         self.log_batch = 100 # 每多少批次打印一次日志        
         self.require_improvement = 1000 # 多少步未提升则停止训练（早停机制）
         self.keep_last_ckpts=5

@@ -21,7 +21,7 @@ def create_data_iterator(file_path, config, tokenizer, seed):
     """创建指定文件的数据迭代器，封装重复逻辑"""
     try:
         return DataProcessor(
-            data_file=file_path,
+            path=file_path,
             device=config.device,
             tokenizer=tokenizer,
             batch_size=config.batch_size,

@@ -1,4 +1,3 @@
-import time
 import torch
 import random
 from tqdm import tqdm
@@ -87,8 +86,10 @@ class DataProcessor(object):
             batch_x,
             padding="max_length",
             truncation="longest_first",
+            max_length=self.max_seq_len,      
             return_tensors="pt"
-        )
+        ) 
+        batch_y = [int(y) for y in batch_y]
         labels = torch.LongTensor(batch_y)
         return inputs, labels
     
@@ -101,3 +102,5 @@ class DataProcessor(object):
         else:
             return self.num_batches
             
+
+

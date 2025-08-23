@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
+import torch.optim as AdamW
 from torch.utils.data import Dataset, DataLoader
-from transformers import BertTokenizer, BertModel, AdamW, get_linear_schedule_with_warmup
+from transformers import BertTokenizer, BertModel, get_linear_schedule_with_warmup
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split

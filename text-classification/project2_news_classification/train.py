@@ -58,8 +58,15 @@ def train(model, config, train_iterator, dev_iterator, optimizer_state=None):
     # 如果有续传状态，加载历史数据
     if optimizer_state is not None:
         try:
+            # 加载优化器状态
             optimizer.load_state_dict(optimizer_state["optimizer"])
+            # 将优化器内部的张量（如动量）转移到当前设备
+            for state in optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.to(config.device)  # 转移到当前设备
             scheduler.load_state_dict(optimizer_state["scheduler"])
+
             start_epoch = optimizer_state["epoch"]
             total_batch = optimizer_state["total_batch"]
             last_improve = optimizer_state["last_improve"]
@@ -70,21 +77,37 @@ def train(model, config, train_iterator, dev_iterator, optimizer_state=None):
     
     # 4. 核心工具函数定义
     def save_checkpoint(model, optimizer, scheduler, epoch, total_batch, last_improve, 
-                        best_dev_loss, config, is_emergency=False):
-        """保存断点，支持紧急保存和自动清理旧断点"""
-        
+                    best_dev_loss, config, is_emergency=False):
+        """保存断点，支持紧急保存和自动清理旧断点（优化设备兼容性）"""
+    
         # 确定保存路径
         if is_emergency:
             checkpoint_path = os.path.join(os.path.dirname(config.checkpoint_template), "emergency.pt")
         else:
             checkpoint_path = config.checkpoint_template.replace("{epoch}", str(epoch))
         
-        # 保存断点内容        
+        # 将模型和优化器状态转移到CPU再保存，避免设备绑定
+        # 1. 模型参数转移到CPU
+        model_state_dict = {
+            k: v.cpu() for k, v in model.state_dict().items()
+        }
+        
+        # 2. 优化器状态转移到CPU（处理内部张量）
+        optimizer_state_dict = optimizer.state_dict()
+        for group in optimizer_state_dict['state'].values():
+            for k, v in group.items():
+                if isinstance(v, torch.Tensor):
+                    group[k] = v.cpu()  # 优化器状态张量转移到CPU
+        
+        # 3. 调度器状态（通常不含张量，但若有也转移到CPU）
+        scheduler_state_dict = scheduler.state_dict()
+        
+        # 保存断点内容（所有张量已在CPU，无设备绑定）
         checkpoint = {
-            "model_state_dict": model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "scheduler": scheduler.state_dict(),
-            "epoch": epoch,  # 当前epoch（已完成的轮次）
+            "model_state_dict": model_state_dict,
+            "optimizer": optimizer_state_dict,
+            "scheduler": scheduler_state_dict,
+            "epoch": epoch,
             "total_batch": total_batch,
             "last_improve": last_improve,
             "best_dev_loss": best_dev_loss
@@ -95,21 +118,12 @@ def train(model, config, train_iterator, dev_iterator, optimizer_state=None):
         log_msg = f"紧急保存断点至：{checkpoint_path}" if is_emergency else f"保存断点至：{checkpoint_path}"
         logger.info(log_msg)
 
-        # 非紧急保存时，清理旧断点（仅保留最近5轮）
+        # 非紧急保存时清理旧断点（原有逻辑保留）
         if not is_emergency:
             ckpt_dir = os.path.dirname(config.checkpoint_template)
-            
-            # 获取所有正常断点（排除紧急断点）
-            all_ckpts = [
-                f for f in os.listdir(ckpt_dir) 
-                if f.startswith("epoch_") and f.endswith(".pt")
-            ]
-           
-            # 按epoch排序（升序）            
-            epoch_pattern = re.compile(r"epoch_(\d+)\.pt")  # 匹配epoch_数字.pt
+            all_ckpts = [f for f in os.listdir(ckpt_dir) if f.startswith("epoch_") and f.endswith(".pt")]
+            epoch_pattern = re.compile(r"epoch_(\d+)\.pt")
             all_ckpts.sort(key=lambda x: int(epoch_pattern.search(x).group(1)))
-            
-            # 删除超过保留数量的旧断点
             if len(all_ckpts) > config.keep_last_ckpts:
                 for old_ckpt in all_ckpts[:-config.keep_last_ckpts]:
                     old_path = os.path.join(ckpt_dir, old_ckpt)
@@ -127,6 +141,9 @@ def train(model, config, train_iterator, dev_iterator, optimizer_state=None):
         for epoch in range(start_epoch, config.num_epochs):
             print(f"\nEpoch [{epoch+1}/{config.num_epochs}]")
             for _, (batch, labels) in enumerate(train_iterator):
+                # 将batch中的张量转移到模型设备
+                batch = {k: v.to(config.device) for k, v in batch.items()}
+                labels = labels.to(config.device)
                 # 前向传播与参数更新
                 outputs = model(
                     input_ids=batch["input_ids"],
@@ -134,6 +151,7 @@ def train(model, config, train_iterator, dev_iterator, optimizer_state=None):
                     token_type_ids=batch["token_type_ids"],
                     labels=labels
                 )
+             
                 loss = outputs.loss / config.gradient_accumulation_steps
                 logits = outputs.logits                
                 loss.backward()
@@ -254,6 +272,9 @@ def eval(model, config, iterator, flag=False):
     
     with torch.no_grad():
         for batch, labels in iterator:
+            # 关键修复：转移数据到模型设备
+            batch = {k: v.to(config.device) for k, v in batch.items()}
+            labels = labels.to(config.device)
             # 模型前向传播
             outputs = model(
                 input_ids=batch["input_ids"],
@@ -303,7 +324,7 @@ def test(model, config, iterator):
     logger = setup_logging(config) 
 
     # 加载训练过程中保存的最佳模型参数
-    model.load_state_dict(torch.load(config.saved_model))
+    model.load_state_dict(torch.load(config.saved_model), map_location=config.device)
     logger.info(f"已加载最佳模型：{config.best_model_path}")
 
     start_time = time.time()  
