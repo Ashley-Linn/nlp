@@ -5,10 +5,9 @@ import time
 import os
 import torch
 import numpy as np 
-from utils import get_time_dif
 from torch.utils.tensorboard import SummaryWriter
 import re
-from utils import setup_logging
+from utils import get_time_dif, get_logger
 
 
 def train(model, config, train_iterator, dev_iterator, optimizer_state=None):
@@ -21,10 +20,9 @@ def train(model, config, train_iterator, dev_iterator, optimizer_state=None):
     :param optimizer_state: 优化器状态字典（断点续传时使用）
     """
     
-    # 初始化日志
-    logger = setup_logging(config)
-    
+    logger = get_logger()      
     model.train()
+    model.to(config.device)
     start_time = time.time()
 
     # 1、优化器参数分组：区分需要权重衰减和不需要权重衰减的参数（通常偏置项(bias)和层归一化参数不使用权重衰减）
@@ -58,29 +56,38 @@ def train(model, config, train_iterator, dev_iterator, optimizer_state=None):
     # 如果有续传状态，加载历史数据
     if optimizer_state is not None:
         try:
-            # 加载优化器状态
-            optimizer.load_state_dict(optimizer_state["optimizer"])
+            optimizer.load_state_dict(optimizer_state["optimizer"])   
             # 将优化器内部的张量（如动量）转移到当前设备
             for state in optimizer.state.values():
                 for k, v in state.items():
                     if isinstance(v, torch.Tensor):
-                        state[k] = v.to(config.device)  # 转移到当前设备
+                        state[k] = v.to(config.device)  
+            
+                     
             scheduler.load_state_dict(optimizer_state["scheduler"])
+            # 部分调度器可能含张量，补充设备检查
+            if hasattr(scheduler, 'state'):
+                for k, v in scheduler.state.items():
+                    if isinstance(v, torch.Tensor):
+                        scheduler.state[k] = v.to(config.device)
 
             start_epoch = optimizer_state["epoch"]
             total_batch = optimizer_state["total_batch"]
             last_improve = optimizer_state["last_improve"]
             best_dev_loss = optimizer_state["best_dev_loss"]
             logger.info(f"已恢复训练状态：起始轮次 {start_epoch+1}，当前总批次数 {total_batch}")
+        
         except RuntimeError as e:
             logger.warning(f"断点状态不兼容，忽略历史优化器状态：{str(e)}")
+            # 兼容失败时重置状态（避免设备混乱）
+            optimizer = AdamW(optimizer_grouped_parameters, lr=config.learning_rate)
+            scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=config.warmup_steps, num_training_steps=t_total)
     
     # 4. 核心工具函数定义
     def save_checkpoint(model, optimizer, scheduler, epoch, total_batch, last_improve, 
-                    best_dev_loss, config, is_emergency=False):
+                        best_dev_loss, config, is_emergency=False):
         """保存断点，支持紧急保存和自动清理旧断点（优化设备兼容性）"""
-    
-        # 确定保存路径
+
         if is_emergency:
             checkpoint_path = os.path.join(os.path.dirname(config.checkpoint_template), "emergency.pt")
         else:
@@ -88,9 +95,7 @@ def train(model, config, train_iterator, dev_iterator, optimizer_state=None):
         
         # 将模型和优化器状态转移到CPU再保存，避免设备绑定
         # 1. 模型参数转移到CPU
-        model_state_dict = {
-            k: v.cpu() for k, v in model.state_dict().items()
-        }
+        model_state_dict = { k: v.cpu() for k, v in model.state_dict().items() }
         
         # 2. 优化器状态转移到CPU（处理内部张量）
         optimizer_state_dict = optimizer.state_dict()
@@ -99,8 +104,12 @@ def train(model, config, train_iterator, dev_iterator, optimizer_state=None):
                 if isinstance(v, torch.Tensor):
                     group[k] = v.cpu()  # 优化器状态张量转移到CPU
         
-        # 3. 调度器状态（通常不含张量，但若有也转移到CPU）
+        # 3. 调度器状态（通常不含张量，仍处理以防万一）
         scheduler_state_dict = scheduler.state_dict()
+        if hasattr(scheduler_state_dict, 'state'):
+            for k, v in scheduler_state_dict['state'].items():
+                if isinstance(v, torch.Tensor):
+                    scheduler_state_dict['state'][k] = v.cpu()
         
         # 保存断点内容（所有张量已在CPU，无设备绑定）
         checkpoint = {
@@ -118,7 +127,7 @@ def train(model, config, train_iterator, dev_iterator, optimizer_state=None):
         log_msg = f"紧急保存断点至：{checkpoint_path}" if is_emergency else f"保存断点至：{checkpoint_path}"
         logger.info(log_msg)
 
-        # 非紧急保存时清理旧断点（原有逻辑保留）
+        # 非紧急保存时清理旧断点
         if not is_emergency:
             ckpt_dir = os.path.dirname(config.checkpoint_template)
             all_ckpts = [f for f in os.listdir(ckpt_dir) if f.startswith("epoch_") and f.endswith(".pt")]
@@ -132,18 +141,30 @@ def train(model, config, train_iterator, dev_iterator, optimizer_state=None):
     
 
     # 5. 初始化TensorBoard
-    writer = SummaryWriter(log_dir=os.path.join(config.data_dir, "tensorboard"))
+    writer = SummaryWriter(log_dir="./tensorboard_logs")
     emergency_ckpt_exists = False  # 标记是否生成过紧急断点
 
     try:
         # 6. 训练主循环
         break_flag = False  # 早停标志
         for epoch in range(start_epoch, config.num_epochs):
-            print(f"\nEpoch [{epoch+1}/{config.num_epochs}]")
+            logger.info(f"\nEpoch [{epoch+1}/{config.num_epochs}]")
+             # 同步优化器状态
+            for state in optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.to(config.device)  # 强制移到目标设备
+            # 同步调度器状态（如果有张量）
+            if hasattr(scheduler, 'state'):
+                for k, v in scheduler.state.items():
+                    if isinstance(v, torch.Tensor):
+                        scheduler.state[k] = v.to(config.device)
             for _, (batch, labels) in enumerate(train_iterator):
                 # 将batch中的张量转移到模型设备
                 batch = {k: v.to(config.device) for k, v in batch.items()}
                 labels = labels.to(config.device)
+                # 验证输入设备
+                assert batch["input_ids"].device == config.device, f"输入数据设备错误：{batch['input_ids'].device}"
                 # 前向传播与参数更新
                 outputs = model(
                     input_ids=batch["input_ids"],
@@ -191,7 +212,7 @@ def train(model, config, train_iterator, dev_iterator, optimizer_state=None):
                     time_dif = get_time_dif(start_time)
                     current_lr = optimizer.param_groups[0]['lr']  # 获取当前学习率
                     msg = 'Iter: {0:>6}, LR: {1:.6f}, Batch Train Loss: {2:>5.2}, Batch Train Acc: {3:>6.2%}, Val Loss: {4:>5.2}, Val Acc: {5:>6.2%}, Time: {6} {7}'
-                    print(msg.format(
+                    logger.info(msg.format(
                         total_batch, current_lr, loss.item(), acc, dev_loss, dev_acc, time_dif, improve
                     ))                   
                     
@@ -238,8 +259,7 @@ def train(model, config, train_iterator, dev_iterator, optimizer_state=None):
         logger.error(f"训练中断：{str(e)}，已保存紧急断点", exc_info=True)  # 记录异常堆栈
         raise  # 抛出异常便于调试
 
-    finally:
-        # 确保TensorBoard writer关闭
+    finally:        
         writer.close()
         logger.info("TensorBoard writer已关闭")
         # 正常结束时清理紧急断点（如果存在）
@@ -262,9 +282,12 @@ def eval(model, config, iterator, flag=False):
     """
     # 将模型设置为评估模式（关闭dropout等训练特有操作）
     
-    logger = setup_logging(config)
-    
+    logger = get_logger()    
     model.eval()
+    
+    # 检查模型设备是否正确
+    model_device = next(model.parameters()).device
+    assert model_device == config.device, f"模型设备错误：当前在 {model_device}，预期 {config.device}"
 
     total_loss = 0  # 总损失
     all_preds = []
@@ -272,10 +295,13 @@ def eval(model, config, iterator, flag=False):
     
     with torch.no_grad():
         for batch, labels in iterator:
-            # 关键修复：转移数据到模型设备
+            # 转移数据到模型设备
             batch = {k: v.to(config.device) for k, v in batch.items()}
             labels = labels.to(config.device)
-            # 模型前向传播
+
+            # 检查数据设备是否与模型一致
+            assert batch["input_ids"].device == model_device, "输入数据与模型设备不匹配"
+           
             outputs = model(
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
@@ -283,8 +309,8 @@ def eval(model, config, iterator, flag=False):
                 labels=labels
             )
 
-            loss = outputs.loss  # 批次损失
-            logits = outputs.logits  # 模型输出的logits
+            loss = outputs.loss  
+            logits = outputs.logits  
 
             total_loss += loss.item()  # 累加损失
             # 将标签和预测结果转移到CPU并转换为numpy数组
@@ -301,17 +327,19 @@ def eval(model, config, iterator, flag=False):
     avg_loss = total_loss / len(iterator)
     logger.info(f"评估完成 - 平均损失: {avg_loss:.4f}, 准确率: {acc:.4f}")
     
-    # 如果需要详细报告，计算分类报告和混淆矩阵
+    model.train() 
+
+    # 详细报告：计算分类报告和混淆矩阵
     if flag:
         report = metrics.classification_report(
             all_labels, all_preds, 
-            target_names=config.label_list,  # 标签名称（用于报告可读性）
+            target_names=config.label_list, 
             digits=4  # 保留4位小数
         )
         confusion = metrics.confusion_matrix(all_labels, all_preds)  # 混淆矩阵
         return acc, avg_loss, report, confusion
-    return acc, avg_loss
-
+    return acc, avg_loss   
+    
 
 def test(model, config, iterator):
     """
@@ -321,10 +349,10 @@ def test(model, config, iterator):
     :param iterator: 测试数据迭代器
     """
 
-    logger = setup_logging(config) 
+    logger = get_logger()    
 
     # 加载训练过程中保存的最佳模型参数
-    model.load_state_dict(torch.load(config.saved_model), map_location=config.device)
+    model.load_state_dict(torch.load(config.best_model_path), map_location=config.device)
     logger.info(f"已加载最佳模型：{config.best_model_path}")
 
     start_time = time.time()  
@@ -337,3 +365,12 @@ def test(model, config, iterator):
     logger.info("Confusion Matrix...")
     logger.info("\n" + str(confusion))  # 换行显示混淆矩阵
     logger.info(f"Time usage: {get_time_dif(start_time)}")
+
+    # 返回值，程序内复用
+    return {
+        "accuracy": acc,
+        "loss": loss,
+        "report": report,
+        "confusion_matrix": confusion,
+        "time_usage": get_time_dif(start_time)
+    }
