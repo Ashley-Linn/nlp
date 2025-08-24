@@ -7,33 +7,8 @@
 其中，数据部分添加了一个简单的分析EDA，思路实现参考：[kangyishuai/NEWS-TEXT-CLASSIFICATION: 零基础入门NLP - 新闻文本分类 正式赛第一名方案](https://github.com/kangyishuai/NEWS-TEXT-CLASSIFICATION?tab=readme-ov-file)
 
 
-# 一、项目架构    
-project2_news_classification/
-├── data/ 
-  │   └── output/  # 其下存放预测输出文件
-  │   ├── dev.txt
-  │   ├── EDA.py # 简单分析数据文本的长度
-  │   ├── input.txt
-  │   ├── label.txt
-  │   ├── test.txt
-  │   └── train.txt
-├── image/  # 存放训练过程图片、demo图片、预测图片
-├── logs/   # 存放训练日志
-├── pretrained_bert/
-  │   ├── config.json
-  │   ├── pytorch_model.bin
-  │   └── vocab.txt
-├── saved_models/   # 保存模型
-  │  ├── model/   
-  │  └── checkpoints/
-├── tensorboard_logs   # 存放可视化日志
-├──  config.py
-├──  download.py   # 预训练模型文件下载
-├──  main.py
-├──  preprocess.py
-├──  README.md
-├──  train.py
-├──  utils.py
+# 一、项目架构  
+![Alt text](image/%E9%A1%B9%E7%9B%AE%E6%9E%B6%E6%9E%84.png)
 
 # **二、环境准备**
 
